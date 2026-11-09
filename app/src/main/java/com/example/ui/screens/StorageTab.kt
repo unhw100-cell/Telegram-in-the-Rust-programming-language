@@ -2,9 +2,12 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,26 +22,31 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.core.CachedMessage
+import com.example.core.ChatDto
+import com.example.core.MessageDto
 import com.example.ui.UiState
 import com.example.ui.theme.*
 
 @Composable
 fun StorageTab(
     uiState: UiState,
-    onSearchChange: (String) -> Unit,
-    onClearMessages: () -> Unit,
+    onSelectChat: (Long) -> Unit,
+    onSendMessage: (Long, String) -> Unit,
+    onClearAll: () -> Unit,
     onRunBenchmark: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var messageInput by remember { mutableStateOf("") }
+    val selectedChat = uiState.chats.find { it.id == uiState.selectedChatId } ?: uiState.chats.firstOrNull()
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .testTag("storage_tab"),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Section 1: SQLite Engine Configuration & WAL Mode
+        // Section 1: SQLite Storage Engine Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -46,14 +54,14 @@ fun StorageTab(
                 colors = CardDefaults.cardColors(containerColor = TgDarkSurface),
                 border = androidx.compose.foundation.BorderStroke(1.dp, TgBorder)
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "SQLITE CACHE ENGINE (RUSQLITE)",
+                            text = "SQLITE STORAGE (TG-STORAGE)",
                             color = TgCyanPrimary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
@@ -75,20 +83,20 @@ fun StorageTab(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Configured with PRAGMA synchronous = NORMAL, temp_store = MEMORY, and a 4MB page cache. " +
-                                "Provides high-throughput non-blocking reads during background message ingestion.",
+                        text = "Таблицы 'chats', 'messages', 'users' синхронизированы в SQLite. " +
+                                "Все входящие пакеты из Tokio Event Loop автоматически сохраняются в БД без блокировки UI.",
                         color = TgTextSecondary,
                         fontSize = 12.sp,
-                        lineHeight = 18.sp
+                        lineHeight = 17.sp
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = onRunBenchmark,
@@ -100,169 +108,308 @@ fun StorageTab(
                         ) {
                             Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Run Batch Benchmark (100)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Бенчмарк (100 вписей)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
 
                         OutlinedButton(
-                            onClick = onClearMessages,
+                            onClick = onClearAll,
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = TgRedError),
                             border = androidx.compose.foundation.BorderStroke(1.dp, TgRedError.copy(alpha = 0.5f))
                         ) {
                             Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Clear", fontSize = 11.sp)
+                            Text("Сброс", fontSize = 11.sp)
                         }
                     }
                 }
             }
         }
 
-        // Section 2: Benchmark Results Card (if run)
+        // Section 2: Benchmark Results (if any)
         uiState.benchmarkResult?.let { bench ->
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = TgDarkSurfaceVariant),
                     border = androidx.compose.foundation.BorderStroke(1.dp, TgCyanPrimary.copy(alpha = 0.4f))
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(14.dp),
+                            .padding(12.dp),
                         horizontalArrangement = Arrangement.SpaceAround,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("INSERTS", color = TgTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            Text("${bench.count}", color = TgTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("ТРАНЗАКЦИИ", color = TgTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            Text("${bench.count}", color = TgTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
-                        Divider(modifier = Modifier.height(28.dp).width(1.dp), color = TgBorder)
+                        Divider(modifier = Modifier.height(24.dp).width(1.dp), color = TgBorder)
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("DURATION", color = TgTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            Text("${bench.durationMs} ms", color = TgCyanPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("ВРЕМЯ", color = TgTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            Text("${bench.durationMs} ms", color = TgCyanPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
-                        Divider(modifier = Modifier.height(28.dp).width(1.dp), color = TgBorder)
+                        Divider(modifier = Modifier.height(24.dp).width(1.dp), color = TgBorder)
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("THROUGHPUT", color = TgTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            Text("${"%.0f".format(bench.tps)} TPS", color = TgGreenSuccess, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("СКОРОСТЬ", color = TgTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            Text("${"%.0f".format(bench.tps)} TPS", color = TgGreenSuccess, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
             }
         }
 
-        // Section 3: Messages Search & List Header
+        // Section 3: Chats Carousel (get_chats FFI)
         item {
-            OutlinedTextField(
-                value = uiState.messageSearchQuery,
-                onValueChange = onSearchChange,
-                placeholder = { Text("Search cached messages...", color = TgTextMuted, fontSize = 12.sp) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TgTextMuted, modifier = Modifier.size(18.dp)) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("search_messages_input"),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = TgDarkSurface,
-                    unfocusedContainerColor = TgDarkSurface,
-                    focusedBorderColor = TgCyanPrimary,
-                    unfocusedBorderColor = TgBorder,
-                    focusedTextColor = TgTextPrimary,
-                    unfocusedTextColor = TgTextPrimary
-                ),
-                singleLine = true
-            )
-        }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "CACHED MESSAGES",
-                    color = TgCyanPrimary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-                Text(
-                    text = "${uiState.cachedMessages.size} in local store",
-                    color = TgTextMuted,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-
-        if (uiState.cachedMessages.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(TgDarkSurface)
-                        .border(1.dp, TgBorder, RoundedCornerShape(14.dp))
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("No messages in cache. Send a message or run the benchmark.", color = TgTextMuted, fontSize = 12.sp)
+                    Text(
+                        text = "ДИАЛОГИ И ЧАТЫ (GET_CHATS)",
+                        color = TgCyanPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = "${uiState.chats.size} чатов в SQLite",
+                        color = TgTextMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(uiState.chats) { chat ->
+                        val isSelected = chat.id == uiState.selectedChatId
+                        Box(
+                            modifier = Modifier
+                                .width(160.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isSelected) TgDarkSurfaceContainer else TgDarkSurface)
+                                .border(
+                                    1.5.dp,
+                                    if (isSelected) TgCyanPrimary else TgBorder,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable { onSelectChat(chat.id) }
+                                .padding(10.dp)
+                        ) {
+                            Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = chat.title,
+                                        color = if (isSelected) TgCyanPrimary else TgTextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                    if (chat.unreadCount > 0) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(TgCyanPrimary)
+                                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${chat.unreadCount}",
+                                                color = Color.Black,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = chat.lastMessageText ?: "Нет сообщений",
+                                    color = TgTextSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = chat.chatType.uppercase(),
+                                    color = TgBlueSecondary,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            items(uiState.cachedMessages) { msg ->
-                MessageCard(msg)
+        }
+
+        // Section 4: Chat Message Thread (get_messages FFI)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = TgDarkSurface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, TgBorder)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Chat, contentDescription = null, tint = TgCyanPrimary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = selectedChat?.title ?: "Чат",
+                                color = TgTextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+
+                        Text(
+                            text = "get_messages(${uiState.selectedChatId})",
+                            color = TgTextMuted,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Message list inside selected chat
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TgCodeBackground)
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (uiState.selectedChatMessages.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("История сообщений пуста", color = TgTextMuted, fontSize = 12.sp)
+                            }
+                        } else {
+                            uiState.selectedChatMessages.forEach { msg ->
+                                MessageBubble(msg)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Message input field
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = messageInput,
+                            onValueChange = { messageInput = it },
+                            placeholder = { Text("Написать в чат...", fontSize = 12.sp, color = TgTextMuted) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = TgDarkSurfaceVariant,
+                                unfocusedContainerColor = TgDarkSurfaceVariant,
+                                focusedBorderColor = TgCyanPrimary,
+                                unfocusedBorderColor = TgBorder,
+                                focusedTextColor = TgTextPrimary,
+                                unfocusedTextColor = TgTextPrimary
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                if (messageInput.isNotBlank()) {
+                                    onSendMessage(uiState.selectedChatId, messageInput)
+                                    messageInput = ""
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = TgCyanPrimary, contentColor = Color.Black),
+                            modifier = Modifier.height(52.dp)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = "Отправить", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun MessageCard(msg: CachedMessage) {
-    Card(
+fun MessageBubble(msg: MessageDto) {
+    val isOut = msg.isOutgoing
+    val bubbleColor = if (isOut) TgDarkSurfaceContainer else TgDarkSurfaceVariant
+    val align = if (isOut) Alignment.End else Alignment.Start
+
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = TgDarkSurface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, TgBorder)
+        horizontalAlignment = align
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = if (msg.senderId == 1001L) "You" else "Peer #${msg.senderId}",
-                        color = if (msg.senderId == 1001L) TgCyanPrimary else TgBlueSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+        Box(
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 12.dp,
+                        topEnd = 12.dp,
+                        bottomStart = if (isOut) 12.dp else 2.dp,
+                        bottomEnd = if (isOut) 2.dp else 12.dp
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "• Chat ${msg.peerId}",
-                        color = TgTextMuted,
-                        fontSize = 11.sp
-                    )
-                }
-
-                Text(
-                    text = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(msg.timestamp),
-                    color = TgTextMuted,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
                 )
+                .background(bubbleColor)
+                .border(1.dp, if (isOut) TgCyanPrimary.copy(alpha = 0.3f) else TgBorder, RoundedCornerShape(12.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            Column {
+                Text(
+                    text = msg.text,
+                    color = TgTextPrimary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(msg.timestamp),
+                        color = TgTextMuted,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    if (isOut) {
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Icon(
+                            imageVector = Icons.Default.DoneAll,
+                            contentDescription = "Delivered",
+                            tint = TgCyanPrimary,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
             }
-
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = msg.body,
-                color = TgTextPrimary,
-                fontSize = 13.sp
-            )
         }
     }
 }

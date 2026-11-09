@@ -44,13 +44,32 @@ data class PacketRecord(
     enum class Direction { INBOUND, OUTBOUND }
 }
 
+data class ChatDto(
+    val id: Long,
+    val title: String,
+    val chatType: String,
+    val lastMessageText: String?,
+    val lastMessageTs: Long,
+    val unreadCount: Int
+)
+
+data class MessageDto(
+    val id: Long,
+    val chatId: Long,
+    val senderId: Long,
+    val text: String,
+    val timestamp: Long,
+    val isOutgoing: Boolean,
+    val deliveryStatus: Int // 0: Sending, 1: Sent, 2: Read
+)
+
 data class CachedMessage(
     val id: Long,
     val peerId: Long,
     val senderId: Long,
     val body: String,
     val timestamp: Long,
-    val deliveryStatus: Int // 0: Sending, 1: Sent, 2: Read
+    val deliveryStatus: Int
 )
 
 sealed class CoreError(val messageText: String) : Exception(messageText) {

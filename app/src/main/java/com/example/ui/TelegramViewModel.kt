@@ -5,12 +5,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.*
 import com.example.data.MessageRepository
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class UiState(
     val selectedDc: DataCenter = TELEGRAM_DCS[1], // DC 2 Amsterdam (Default)
@@ -19,14 +17,16 @@ data class UiState(
     val packets: List<PacketRecord> = emptyList(),
     val activeKeySession: AuthKeySession = AuthKeySession("None", "No Key", false),
     val panicResults: List<PanicTestResult> = emptyList(),
-    val cachedMessages: List<CachedMessage> = emptyList(),
+    val chats: List<ChatDto> = emptyList(),
+    val selectedChatId: Long = 777L,
+    val selectedChatMessages: List<MessageDto> = emptyList(),
     val messageSearchQuery: String = "",
     val benchmarkResult: MessageRepository.BenchmarkResult? = null,
     val logs: List<LogEntry> = emptyList(),
     val customIp: String = "149.154.167.50",
     val customPort: String = "443",
     val isCustomDc: Boolean = false,
-    val selectedRustFile: String = "crates/tg-ffi/src/core.rs",
+    val selectedRustFile: String = "crates/tg-core/src/lib.rs",
     val pingMs: Long = -1L,
     val isPinging: Boolean = false
 )
@@ -53,7 +53,7 @@ class TelegramViewModel(application: Application) : AndroidViewModel(application
     init {
         log(LogEntry.Level.INFO, "tg_core", "TelegramCore initialized with 2-worker Tokio thread pool.")
         log(LogEntry.Level.INFO, "tg_crypto", "AuthKey generated (2048-bit). ZeroizeOnDrop guard active.")
-        log(LogEntry.Level.INFO, "tg_storage", "SQLite WAL cache opened at ${application.filesDir.absolutePath}/tg_cache.db")
+        log(LogEntry.Level.INFO, "tg_storage", "SQLite WAL opened at ${application.filesDir.absolutePath}/tg_database.db (tables: chats, messages, users)")
 
         // Observe incoming packets
         viewModelScope.launch {
@@ -66,10 +66,25 @@ class TelegramViewModel(application: Application) : AndroidViewModel(application
                     "tg_network",
                     "${packet.direction}: ${packet.description} [${packet.sizeBytes} B]"
                 )
+
+                // Если пришел входящий фрейм, сохраняем его в чат Telegram Notifications
+                if (packet.direction == PacketRecord.Direction.INBOUND) {
+                    val incoming = MessageDto(
+                        id = System.currentTimeMillis(),
+                        chatId = 777L,
+                        senderId = 777L,
+                        text = "Входящий MTProto фрейм: ${packet.hexPreview} (${packet.sizeBytes} байт)",
+                        timestamp = System.currentTimeMillis(),
+                        isOutgoing = false,
+                        deliveryStatus = 2
+                    )
+                    repository.saveMessage(incoming)
+                    refreshStorage()
+                }
             }
         }
 
-        refreshMessages()
+        refreshStorage()
     }
 
     fun selectDc(dc: DataCenter) {
@@ -104,18 +119,19 @@ class TelegramViewModel(application: Application) : AndroidViewModel(application
                 when (state) {
                     is ConnectionState.Connected -> {
                         log(LogEntry.Level.INFO, "tg_network", "MTProto connected to ${state.endpoint}! RTT latency: ${state.latencyMs} ms")
-                        // Add auto welcome message
-                        val msg = CachedMessage(
+
+                        val msg = MessageDto(
                             id = System.currentTimeMillis(),
-                            peerId = 1001,
-                            senderId = 777,
-                            body = "Session established with ${dc.name} via MTProto ${protocol.label}.",
+                            chatId = 777L,
+                            senderId = 777L,
+                            text = "Сессия MTProto установлена с ${dc.name} (${dc.endpoint})",
                             timestamp = System.currentTimeMillis(),
-                            deliveryStatus = 1
+                            isOutgoing = false,
+                            deliveryStatus = 2
                         )
                         viewModelScope.launch {
-                            repository.insertMessage(msg)
-                            refreshMessages()
+                            repository.saveMessage(msg)
+                            refreshStorage()
                         }
                     }
                     is ConnectionState.Error -> {
@@ -163,22 +179,35 @@ class TelegramViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun sendCustomMessage(text: String) {
+        sendMessageToChat(_uiState.value.selectedChatId, text)
+    }
+
+    fun sendMessageToChat(chatId: Long, text: String) {
         if (text.isBlank()) return
         viewModelScope.launch {
             val bytes = text.toByteArray(Charsets.UTF_8)
             engine.sendFrame(bytes, _uiState.value.selectedProtocol)
 
-            val msg = CachedMessage(
+            val msg = MessageDto(
                 id = System.currentTimeMillis(),
-                peerId = 1001,
-                senderId = 1001, // Self
-                body = text,
+                chatId = chatId,
+                senderId = 1001L, // Self
+                text = text,
                 timestamp = System.currentTimeMillis(),
+                isOutgoing = true,
                 deliveryStatus = 1
             )
-            repository.insertMessage(msg)
-            refreshMessages()
-            log(LogEntry.Level.INFO, "tg_core", "Dispatched outbound message: \"$text\"")
+            repository.saveMessage(msg)
+            refreshStorage()
+            log(LogEntry.Level.INFO, "tg_storage", "Сообщение сохранено в SQLite (чат #$chatId): \"$text\"")
+        }
+    }
+
+    fun selectChat(chatId: Long) {
+        _uiState.value = _uiState.value.copy(selectedChatId = chatId)
+        viewModelScope.launch {
+            val msgs = repository.getMessages(chatId)
+            _uiState.value = _uiState.value.copy(selectedChatMessages = msgs)
         }
     }
 
@@ -207,36 +236,36 @@ class TelegramViewModel(application: Application) : AndroidViewModel(application
         log(LogEntry.Level.WARN, "tg_crypto", "ZeroizeOnDrop triggered! 256 bytes of sensitive key material zeroed in memory.")
     }
 
-    fun refreshMessages() {
+    fun refreshStorage() {
         viewModelScope.launch {
-            val list = repository.getMessages(query = _uiState.value.messageSearchQuery)
-            _uiState.value = _uiState.value.copy(cachedMessages = list)
+            val chats = repository.getChats()
+            val currentChatId = _uiState.value.selectedChatId
+            val msgs = repository.getMessages(currentChatId)
+            _uiState.value = _uiState.value.copy(
+                chats = chats,
+                selectedChatMessages = msgs
+            )
         }
     }
 
-    fun searchMessages(q: String) {
-        _uiState.value = _uiState.value.copy(messageSearchQuery = q)
-        refreshMessages()
-    }
-
-    fun clearMessages() {
+    fun clearAllStorage() {
         viewModelScope.launch {
-            repository.clearMessages()
-            refreshMessages()
-            log(LogEntry.Level.INFO, "tg_storage", "SQLite message cache cleared.")
+            repository.clearAllData()
+            refreshStorage()
+            log(LogEntry.Level.INFO, "tg_storage", "Таблицы SQLite chats, messages, users очищены и пересозданы.")
         }
     }
 
     fun runStorageBenchmark() {
         viewModelScope.launch {
-            log(LogEntry.Level.INFO, "tg_storage", "Starting 100-record batch write benchmark...")
+            log(LogEntry.Level.INFO, "tg_storage", "Запуск бенчмарка 100 пакетных транзакций SQLite...")
             val result = repository.runBenchmark(100)
             _uiState.value = _uiState.value.copy(benchmarkResult = result)
-            refreshMessages()
+            refreshStorage()
             log(
                 LogEntry.Level.INFO,
                 "tg_storage",
-                "Benchmark complete: 100 records written in ${result.durationMs} ms (${"%.1f".format(result.tps)} TPS)"
+                "Бенчмарк завершен: 100 записей за ${result.durationMs} ms (${"%.1f".format(result.tps)} TPS)"
             )
         }
     }

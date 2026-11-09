@@ -4,116 +4,179 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import com.example.core.CachedMessage
+import com.example.core.ChatDto
+import com.example.core.MessageDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Android SQLite implementation matching the Rust tg-storage crate.
- * Configured with WAL journal mode, synchronous=NORMAL, and 4MB cache size.
+ * Android SQLite implementation strictly matching the Rust tg-storage crate.
+ * Configured with WAL journal mode, synchronous=NORMAL, and 4MB page cache.
  */
-class MessageRepository(context: Context) : SQLiteOpenHelper(context, "tg_cache.db", null, 1) {
+class MessageRepository(context: Context) : SQLiteOpenHelper(context, "tg_database.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
+        // Таблица пользователей
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                first_name TEXT NOT NULL,
+                last_name TEXT,
+                username TEXT,
+                phone TEXT,
+                is_bot INTEGER DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        // Таблица чатов
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS chats (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                chat_type TEXT NOT NULL DEFAULT 'user',
+                last_message_text TEXT,
+                last_message_ts INTEGER DEFAULT 0,
+                unread_count INTEGER DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        // Таблица сообщений
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY,
-                peer_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
                 sender_id INTEGER NOT NULL,
-                body TEXT NOT NULL,
+                text TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
-                delivery_status INTEGER DEFAULT 0
+                is_outgoing INTEGER DEFAULT 0,
+                delivery_status INTEGER DEFAULT 1,
+                FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
             )
             """.trimIndent()
         )
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_peer ON messages(peer_id, timestamp DESC)")
 
-        // Insert initial demo messages matching MTProto channels
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, timestamp DESC)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_chats_order ON chats(last_message_ts DESC)")
+
+        // Начальные данные (Seed data)
+        seedInitialData(db)
+    }
+
+    private fun seedInitialData(db: SQLiteDatabase) {
         val now = System.currentTimeMillis()
-        val initialMessages = listOf(
-            CachedMessage(now - 3600000, 1001, 777, "Welcome to Telegram Rust Core engine console.", now - 3600000, 2),
-            CachedMessage(now - 1800000, 1001, 777, "MTProto 2.0 handshake verified with DC 2 (Amsterdam).", now - 1800000, 2),
-            CachedMessage(now - 600000, 1001, 1001, "Tokio multi-thread runtime initialized with 2 worker threads.", now - 600000, 1)
-        )
-        for (msg in initialMessages) {
-            val cv = ContentValues().apply {
-                put("id", msg.id)
-                put("peer_id", msg.peerId)
-                put("sender_id", msg.senderId)
-                put("body", msg.body)
-                put("timestamp", msg.timestamp)
-                put("delivery_status", msg.deliveryStatus)
-            }
-            db.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+
+        // 1. Системный чат Telegram Notifications
+        val chat1 = ContentValues().apply {
+            put("id", 777L)
+            put("title", "Telegram Notifications")
+            put("chat_type", "channel")
+            put("last_message_text", "MTProto 2.0 сессия успешно создана с DC 2.")
+            put("last_message_ts", now - 600000)
+            put("unread_count", 1)
         }
+        db.insertWithOnConflict("chats", null, chat1, SQLiteDatabase.CONFLICT_REPLACE)
+
+        // 2. Групповой чат Rust Core Architecture
+        val chat2 = ContentValues().apply {
+            put("id", 1002L)
+            put("title", "Rust Core Architect Team")
+            put("chat_type", "group")
+            put("last_message_text", "Tokio multi-thread runtime инициализирован (2 воркера).")
+            put("last_message_ts", now - 1800000)
+            put("unread_count", 0)
+        }
+        db.insertWithOnConflict("chats", null, chat2, SQLiteDatabase.CONFLICT_REPLACE)
+
+        // 3. Личный чат с Pavel Durov
+        val chat3 = ContentValues().apply {
+            put("id", 1003L)
+            put("title", "Pavel Durov")
+            put("chat_type", "user")
+            put("last_message_text", "Безопасность памяти с Zeroize работает отлично.")
+            put("last_message_ts", now - 3600000)
+            put("unread_count", 0)
+        }
+        db.insertWithOnConflict("chats", null, chat3, SQLiteDatabase.CONFLICT_REPLACE)
+
+        // Начальные сообщения
+        val msg1 = ContentValues().apply {
+            put("id", now - 600000)
+            put("chat_id", 777L)
+            put("sender_id", 777L)
+            put("text", "MTProto 2.0 сессия успешно создана с DC 2.")
+            put("timestamp", now - 600000)
+            put("is_outgoing", 0)
+            put("delivery_status", 2)
+        }
+        val msg2 = ContentValues().apply {
+            put("id", now - 1800000)
+            put("chat_id", 1002L)
+            put("sender_id", 1001L) // Self
+            put("text", "Tokio multi-thread runtime инициализирован (2 воркера).")
+            put("timestamp", now - 1800000)
+            put("is_outgoing", 1)
+            put("delivery_status", 2)
+        }
+        val msg3 = ContentValues().apply {
+            put("id", now - 3600000)
+            put("chat_id", 1003L)
+            put("sender_id", 1003L)
+            put("text", "Безопасность памяти с Zeroize работает отлично.")
+            put("timestamp", now - 3600000)
+            put("is_outgoing", 0)
+            put("delivery_status", 2)
+        }
+
+        db.insertWithOnConflict("messages", null, msg1, SQLiteDatabase.CONFLICT_REPLACE)
+        db.insertWithOnConflict("messages", null, msg2, SQLiteDatabase.CONFLICT_REPLACE)
+        db.insertWithOnConflict("messages", null, msg3, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
-        // High-performance SQLite pragmas matching tg-storage
         db.enableWriteAheadLogging()
         db.execSQL("PRAGMA synchronous = NORMAL")
+        db.execSQL("PRAGMA foreign_keys = ON")
         db.execSQL("PRAGMA temp_store = MEMORY")
-        db.execSQL("PRAGMA cache_size = -4000") // 4MB cache
+        db.execSQL("PRAGMA cache_size = -4000") // 4MB page cache
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS messages")
+        db.execSQL("DROP TABLE IF EXISTS chats")
+        db.execSQL("DROP TABLE IF EXISTS users")
         onCreate(db)
     }
 
-    suspend fun insertMessage(msg: CachedMessage): Unit = withContext(Dispatchers.IO) {
-        val db = writableDatabase
-        val cv = ContentValues().apply {
-            put("id", msg.id)
-            put("peer_id", msg.peerId)
-            put("sender_id", msg.senderId)
-            put("body", msg.body)
-            put("timestamp", msg.timestamp)
-            put("delivery_status", msg.deliveryStatus)
-        }
-        db.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
-    }
+    // --- ОПЕРАЦИИ С ЧАТАМИ ---
 
-    suspend fun getMessages(peerId: Long? = null, query: String = "", limit: Int = 100): List<CachedMessage> = withContext(Dispatchers.IO) {
+    suspend fun getChats(): List<ChatDto> = withContext(Dispatchers.IO) {
         val db = readableDatabase
-        val list = mutableListOf<CachedMessage>()
-
-        val whereClauses = mutableListOf<String>()
-        val args = mutableListOf<String>()
-
-        if (peerId != null) {
-            whereClauses.add("peer_id = ?")
-            args.add(peerId.toString())
-        }
-        if (query.isNotBlank()) {
-            whereClauses.add("body LIKE ?")
-            args.add("%$query%")
-        }
-
-        val whereStr = if (whereClauses.isNotEmpty()) whereClauses.joinToString(" AND ") else null
+        val list = mutableListOf<ChatDto>()
         val cursor = db.query(
-            "messages",
-            arrayOf("id", "peer_id", "sender_id", "body", "timestamp", "delivery_status"),
-            whereStr,
-            if (args.isNotEmpty()) args.toTypedArray() else null,
+            "chats",
+            arrayOf("id", "title", "chat_type", "last_message_text", "last_message_ts", "unread_count"),
             null,
             null,
-            "timestamp DESC",
-            limit.toString()
+            null,
+            null,
+            "last_message_ts DESC"
         )
-
         cursor.use { c ->
             while (c.moveToNext()) {
                 list.add(
-                    CachedMessage(
+                    ChatDto(
                         id = c.getLong(0),
-                        peerId = c.getLong(1),
-                        senderId = c.getLong(2),
-                        body = c.getString(3),
-                        timestamp = c.getLong(4),
-                        deliveryStatus = c.getInt(5)
+                        title = c.getString(1),
+                        chatType = c.getString(2),
+                        lastMessageText = c.getString(3),
+                        lastMessageTs = c.getLong(4),
+                        unreadCount = c.getInt(5)
                     )
                 )
             }
@@ -121,12 +184,82 @@ class MessageRepository(context: Context) : SQLiteOpenHelper(context, "tg_cache.
         list
     }
 
-    suspend fun clearMessages(): Unit = withContext(Dispatchers.IO) {
-        writableDatabase.delete("messages", null, null)
+    suspend fun saveChat(chat: ChatDto): Unit = withContext(Dispatchers.IO) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("id", chat.id)
+            put("title", chat.title)
+            put("chat_type", chat.chatType)
+            put("last_message_text", chat.lastMessageText)
+            put("last_message_ts", chat.lastMessageTs)
+            put("unread_count", chat.unreadCount)
+        }
+        db.insertWithOnConflict("chats", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    // --- ОПЕРАЦИИ С СООБЩЕНИЯМИ ---
+
+    suspend fun getMessages(chatId: Long, limit: Int = 50, offset: Int = 0): List<MessageDto> = withContext(Dispatchers.IO) {
+        val db = readableDatabase
+        val list = mutableListOf<MessageDto>()
+        val cursor = db.query(
+            "messages",
+            arrayOf("id", "chat_id", "sender_id", "text", "timestamp", "is_outgoing", "delivery_status"),
+            "chat_id = ?",
+            arrayOf(chatId.toString()),
+            null,
+            null,
+            "timestamp ASC",
+            "$offset, $limit"
+        )
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                list.add(
+                    MessageDto(
+                        id = c.getLong(0),
+                        chatId = c.getLong(1),
+                        senderId = c.getLong(2),
+                        text = c.getString(3),
+                        timestamp = c.getLong(4),
+                        isOutgoing = c.getInt(5) == 1,
+                        deliveryStatus = c.getInt(6)
+                    )
+                )
+            }
+        }
+        list
+    }
+
+    suspend fun saveMessage(msg: MessageDto): Unit = withContext(Dispatchers.IO) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("id", msg.id)
+            put("chat_id", msg.chatId)
+            put("sender_id", msg.senderId)
+            put("text", msg.text)
+            put("timestamp", msg.timestamp)
+            put("is_outgoing", if (msg.isOutgoing) 1 else 0)
+            put("delivery_status", msg.deliveryStatus)
+        }
+        db.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+
+        // Обновляем последнее сообщение в чате
+        val chatCv = ContentValues().apply {
+            put("last_message_text", msg.text)
+            put("last_message_ts", msg.timestamp)
+        }
+        db.update("chats", chatCv, "id = ?", arrayOf(msg.chatId.toString()))
+    }
+
+    suspend fun clearAllData(): Unit = withContext(Dispatchers.IO) {
+        val db = writableDatabase
+        db.delete("messages", null, null)
+        db.delete("chats", null, null)
+        seedInitialData(db)
     }
 
     /**
-     * Executes a batch insert benchmark of 100 records and measures TPS & total latency
+     * Бенчмарк пакетной вставки 100 сообщений
      */
     suspend fun runBenchmark(count: Int = 100): BenchmarkResult = withContext(Dispatchers.IO) {
         val db = writableDatabase
@@ -137,10 +270,11 @@ class MessageRepository(context: Context) : SQLiteOpenHelper(context, "tg_cache.
             for (i in 0 until count) {
                 val cv = ContentValues().apply {
                     put("id", now + i)
-                    put("peer_id", 1001)
-                    put("sender_id", 777)
-                    put("body", "Benchmark test record #$i - MTProto encrypted payload frame verification")
+                    put("chat_id", 1002L)
+                    put("sender_id", 1001L)
+                    put("text", "Пакетная транзакция SQLite #$i - проверка PRAGMA WAL режима")
                     put("timestamp", now + i)
+                    put("is_outgoing", 1)
                     put("delivery_status", 1)
                 }
                 db.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)

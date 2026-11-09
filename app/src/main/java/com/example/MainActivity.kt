@@ -95,8 +95,9 @@ class MainActivity : ComponentActivity() {
                                 AppTab.STORAGE -> {
                                     StorageTab(
                                         uiState = uiState,
-                                        onSearchChange = { viewModel.searchMessages(it) },
-                                        onClearMessages = { viewModel.clearMessages() },
+                                        onSelectChat = { viewModel.selectChat(it) },
+                                        onSendMessage = { chatId, text -> viewModel.sendMessageToChat(chatId, text) },
+                                        onClearAll = { viewModel.clearAllStorage() },
                                         onRunBenchmark = { viewModel.runStorageBenchmark() }
                                     )
                                 }
