@@ -40,6 +40,29 @@ data class RustSourceFile(
 
 val RUST_FILES = listOf(
     RustSourceFile(
+        path = "release.sh",
+        name = "release.sh",
+        crateName = "scripts",
+        code = """
+#!/usr/bin/env bash
+# Скрипт релизной сборки Rust Core + Android APK с максимальной оптимизацией:
+# - opt-level = "s"
+# - lto = "fat"
+# - codegen-units = 1
+# - strip = "symbols"
+set -euo pipefail
+
+cargo ndk \
+    -t arm64-v8a \
+    -t armeabi-v7a \
+    -t x86_64 \
+    -o ../app/src/main/jniLibs \
+    build --release -p tg-core
+
+./gradlew :app:assembleRelease
+""".trimIndent()
+    ),
+    RustSourceFile(
         path = "crates/tg-media/src/cache.rs",
         name = "cache.rs",
         crateName = "tg-media",

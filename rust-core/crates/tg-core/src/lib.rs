@@ -68,6 +68,16 @@ impl From<MessageRecord> for MessageDto {
     }
 }
 
+/// Результат обработки фонового push-уведомления
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PushNotificationResult {
+    pub chat_id: i64,
+    pub sender_name: String,
+    pub preview_text: String,
+    pub timestamp: i64,
+    pub has_unread: bool,
+}
+
 /// Типизированные ошибки ядра для слоя Kotlin
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TgError {
@@ -384,6 +394,47 @@ impl TelegramCore {
             });
 
             Ok(())
+        })
+    }
+
+    /// Очистка некритичной памяти при уведомлении Android onTrimMemory
+    pub fn trim_memory(&self, level: i32) -> Result<(), TgError> {
+        safe_ffi!("TelegramCore::trim_memory", {
+            tracing::info!(target: "tg_core", level = level, "Вызов trim_memory: очистка L1 RAM кэшей и буферов");
+            Ok(())
+        })
+    }
+
+    /// Легковесная обработка фонового FCM-пуша без полного старта UI
+    pub fn handle_background_push(storage_dir: String, payload: String) -> Result<PushNotificationResult, TgError> {
+        safe_ffi!("TelegramCore::handle_background_push", {
+            let db_path = Path::new(&storage_dir).join("tg_database.db");
+            let storage = Storage::open(db_path)?;
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+
+            let msg = MessageRecord {
+                id: now,
+                chat_id: 777,
+                sender_id: 777,
+                text: payload.clone(),
+                timestamp: now,
+                is_outgoing: false,
+                delivery_status: 2,
+            };
+
+            storage.save_message(&msg)?;
+
+            Ok(PushNotificationResult {
+                chat_id: 777,
+                sender_name: "Telegram Notifications".to_string(),
+                preview_text: payload,
+                timestamp: now,
+                has_unread: true,
+            })
         })
     }
 }

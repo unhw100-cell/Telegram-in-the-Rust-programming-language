@@ -16,7 +16,7 @@ authors = ["Telegram Core Architecture Team <dev@telegram.org>"]
 license = "Apache-2.0"
 
 [profile.release]
-opt-level = 3
+opt-level = "s"         # Optimize for binary size (crucial for mobile APK size)
 lto = "fat"             # Link-Time Optimization for smallest binary footprint
 codegen-units = 1       # Maximum compiler optimizations
 panic = "unwind"        # Required for std::panic::catch_unwind on FFI boundary!
