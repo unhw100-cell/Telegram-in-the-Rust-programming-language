@@ -1,0 +1,6 @@
+{
+  "name": "Telegram Rust Core",
+  "description": "Telegram client core in Rust with UniFFI, MTProto engine, panic safety, and Kotlin Jetpack Compose bridge.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

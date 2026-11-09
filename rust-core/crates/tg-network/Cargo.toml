@@ -1,0 +1,15 @@
+[package]
+name = "tg-network"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tg-crypto = { path = "../tg-crypto" }
+tokio = { version = "1.43", features = ["net", "io-util", "sync", "time", "macros"] }
+bytes = "1.10"
+thiserror = "2.0"
+tracing = "0.1"
+byteorder = "1.5"
+crc32fast = "1.4"

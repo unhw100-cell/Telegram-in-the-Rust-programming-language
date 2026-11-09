@@ -1,0 +1,29 @@
+[package]
+name = "tg-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "tg_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+tg-crypto = { path = "../tg-crypto" }
+tg-network = { path = "../tg-network" }
+tg-storage = { path = "../tg-storage" }
+
+tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
+uniffi = { version = "0.28", features = ["tokio"] }
+parking_lot = "0.12"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-android = "0.2"
+bytes = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }

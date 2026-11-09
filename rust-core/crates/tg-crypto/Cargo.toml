@@ -1,0 +1,13 @@
+[package]
+name = "tg-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+zeroize = { version = "1.8", features = ["derive"] }
+sha2 = "0.10"
+rand = "0.8"
+thiserror = "2.0"
+byteorder = "1.5"
