@@ -6,6 +6,7 @@ members = [
     "crates/tg-storage",
     "crates/tg-ffi",
     "crates/tg-core",
+    "crates/tg-media",
 ]
 
 [workspace.package]

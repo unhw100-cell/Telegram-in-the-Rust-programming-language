@@ -40,6 +40,99 @@ data class RustSourceFile(
 
 val RUST_FILES = listOf(
     RustSourceFile(
+        path = "crates/tg-media/src/cache.rs",
+        name = "cache.rs",
+        crateName = "tg-media",
+        code = """
+// Двухуровневый кэш медиафайлов: L1 RAM (LRU) + L2 Disk
+pub struct TwoTierMediaCache {
+    l1_ram: Arc<RwLock<L1RamCache>>,
+    disk_dir: PathBuf,
+    max_disk_bytes: u64,
+}
+
+impl TwoTierMediaCache {
+    pub fn get(&self, media_id: &str) -> Option<Vec<u8>> {
+        // 1. Быстрая проверка L1 в ОЗУ (0 мс)
+        if let Some(data) = self.l1_ram.write().get(media_id) {
+            return Some(data);
+        }
+        // 2. Чтение из L2 накопителя и промоушен в L1 RAM
+        let disk_path = self.get_disk_path(media_id);
+        if let Ok(data) = fs::read(&disk_path) {
+            if data.len() <= 256 * 1024 {
+                self.l1_ram.write().put(media_id.to_string(), data.clone());
+            }
+            return Some(data);
+        }
+        None
+    }
+}
+""".trimIndent()
+    ),
+    RustSourceFile(
+        path = "crates/tg-media/src/downloader.rs",
+        name = "downloader.rs",
+        crateName = "tg-media",
+        code = """
+// Потоковая загрузка медиафайлов чанками по 128 КБ (MTProto upload.getFile)
+pub const CHUNK_SIZE_128K: usize = 131072;
+
+pub struct ChunkedDownloader {
+    cache: Arc<TwoTierMediaCache>,
+}
+
+impl ChunkedDownloader {
+    pub async fn download_file<F>(
+        &self, media_id: &str, location: &MediaLocation, mut on_progress: F
+    ) -> Result<Vec<u8>, DownloadError> where F: FnMut(usize, usize) {
+        if let Some(cached) = self.cache.get(media_id) {
+            return Ok(cached);
+        }
+        let mut assembled = Vec::with_capacity(location.total_size_bytes);
+        let mut offset = 0;
+        while offset < location.total_size_bytes {
+            let limit = std::cmp::min(CHUNK_SIZE_128K, location.total_size_bytes - offset);
+            let chunk = self.fetch_mtproto_chunk(location.file_id, offset, limit).await?;
+            assembled.extend_from_slice(&chunk);
+            offset += chunk.len();
+            on_progress(offset, location.total_size_bytes);
+        }
+        self.cache.put(media_id, assembled.clone())?;
+        Ok(assembled)
+    }
+}
+""".trimIndent()
+    ),
+    RustSourceFile(
+        path = "crates/tg-storage/src/cipher.rs",
+        name = "cipher.rs",
+        crateName = "tg-storage",
+        code = """
+// Прозрачное шифрование полей базы данных через AES-256-GCM (Keystore)
+pub struct DatabaseCipher {
+    cipher: Aes256Gcm,
+}
+
+impl DatabaseCipher {
+    pub fn encrypt_text(&self, plaintext: &str) -> Result<String, CipherError> {
+        let mut nonce = [0u8; 12]; // Уникальный 12-байтный Nonce на каждую запись
+        fill_secure_random(&mut nonce);
+        let ciphertext = self.cipher.encrypt(Nonce::from_slice(&nonce), plaintext.as_bytes())?;
+        Ok(format!("ENC:v1:{}:{}", hex::encode(nonce), hex::encode(ciphertext)))
+    }
+
+    pub fn decrypt_text(&self, text: &str) -> Result<String, CipherError> {
+        if !text.starts_with("ENC:v1:") {
+            return Ok(text.to_string()); // Обратная совместимость с открытым текстом
+        }
+        // Парсинг nonce и ciphertext с проверкой 16-байтного auth tag
+        ...
+    }
+}
+""".trimIndent()
+    ),
+    RustSourceFile(
         path = "crates/tg-network/src/connection.rs",
         name = "connection.rs",
         crateName = "tg-network",

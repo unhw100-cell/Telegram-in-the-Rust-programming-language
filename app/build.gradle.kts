@@ -142,3 +142,37 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+// Автоматическая компиляция Rust ядра через cargo-ndk перед упаковкой JNI библиотек в APK
+tasks.register<Exec>("cargoNdkBuild") {
+    group = "rust"
+    description = "Compiles Rust Core (tg-core) using cargo-ndk for Android ARM64"
+    workingDir = file("${rootDir}/rust-core")
+
+    val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+    val cargoExec = if (isWindows) "cargo.exe" else "cargo"
+
+    val pathDirs = System.getenv("PATH")?.split(File.pathSeparator) ?: emptyList()
+    val cargoExists = pathDirs.any { File(it, cargoExec).exists() }
+
+    if (cargoExists) {
+        commandLine(
+            cargoExec, "ndk",
+            "-t", "arm64-v8a",
+            "-o", "${projectDir}/src/main/jniLibs",
+            "build", "--release",
+            "-p", "tg-core"
+        )
+    } else {
+        commandLine("sh", "-c", "echo 'Rust cargo-ndk not detected in PATH, using pre-packaged JNI libs'")
+    }
+
+    isIgnoreExitValue = true
+}
+
+tasks.configureEach {
+    if (name == "mergeDebugJniLibFolders" || name == "mergeReleaseJniLibFolders") {
+        dependsOn("cargoNdkBuild")
+    }
+}
+

@@ -1,0 +1,19 @@
+[package]
+name = "tg-media"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tg-network = { path = "../tg-network" }
+tg-crypto = { path = "../tg-crypto" }
+
+tokio = { version = "1.43", features = ["sync", "time", "io-util", "fs", "macros"] }
+bytes = "1.10"
+thiserror = "2.0"
+tracing = "0.1"
+parking_lot = "0.12"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
