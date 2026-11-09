@@ -3,7 +3,9 @@
 //! 1. Асинхронный цикл событий (Event Loop) и диспетчеризацию обновлений MTProto.
 //! 2. Сохранение сообщений и чатов в локальную SQLite БД (`tg-storage`).
 //! 3. Экспорт безопасного FFI-API через UniFFI для Kotlin / Jetpack Compose.
+//! 4. Проброс логов Rust (trace!, info!, warn!, error!) в системный Android Logcat (`android_logger`).
 
+use log::{error, info, trace, warn, LevelFilter};
 use parking_lot::RwLock;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
@@ -17,6 +19,36 @@ use tokio::sync::Mutex as TokioMutex;
 
 // 1. НАСТРОЙКА UNIFFI ДЛЯ ГЕНЕРАЦИИ KOTLIN-БИНДИНГОВ
 uniffi::setup_scaffolding!();
+
+/// Инициализация моста логирования Rust -> Android Logcat / Консоль
+#[cfg(target_os = "android")]
+pub fn init_android_logger() {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(LevelFilter::Trace)
+            .with_tag("TelegramCore")
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .parse("trace,tg_core=trace,tg_network=trace,tg_crypto=debug,tg_storage=debug,tg_media=debug")
+                    .build(),
+            ),
+    );
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn init_android_logger() {
+    let _ = env_logger::builder()
+        .filter_level(LevelFilter::Trace)
+        .is_test(true)
+        .try_init();
+}
+
+/// Экспортируемая функция инициализации логера для Kotlin Application.onCreate()
+#[uniffi::export]
+pub fn init_rust_logger() {
+    init_android_logger();
+    info!(target: "TelegramCore", "Rust Core Logger успешно подключен к Android Logcat (Level: TRACE)");
+}
 
 /// DTO структуры данных, автоматически транслируемые UniFFI в Kotlin data class
 
@@ -123,7 +155,7 @@ macro_rules! safe_ffi {
                     "Неизвестная полезная нагрузка паники".to_string()
                 };
 
-                tracing::error!(target: "tg_core_panic", context = $context, reason = %reason);
+                error!(target: "TelegramCore", "CRITICAL FFI PANIC in [{}]: {}", $context, reason);
 
                 Err(TgError::PanicCaught {
                     context: $context.to_string(),
@@ -166,7 +198,8 @@ impl TelegramCore {
     #[uniffi::constructor]
     pub fn new(storage_dir: String) -> Result<Arc<Self>, TgError> {
         safe_ffi!("TelegramCore::new", {
-            let _ = tracing_android::try_init("TelegramCore");
+            init_android_logger();
+            trace!(target: "TelegramCore", "Вызов TelegramCore::new: storage_dir={}", storage_dir);
 
             let runtime = Builder::new_multi_thread()
                 .worker_threads(2)
@@ -181,7 +214,7 @@ impl TelegramCore {
 
             let connection = TgConnection::new(TransportKind::Abridged);
 
-            tracing::info!(target: "tg_core", "TelegramCore и SQLite инициализированы");
+            info!(target: "TelegramCore", "TelegramCore и SQLite инициализированы успешно в WAL-режиме");
 
             Ok(Arc::new(Self {
                 runtime: Arc::new(runtime),
@@ -196,6 +229,7 @@ impl TelegramCore {
     /// Регистрация слушателя событий из Kotlin
     pub fn set_listener(&self, listener: Box<dyn TgClientListener>) -> Result<(), TgError> {
         safe_ffi!("TelegramCore::set_listener", {
+            trace!(target: "TelegramCore", "Регистрация TgClientListener через UniFFI");
             let mut guard = self.listener.write();
             *guard = Some(listener);
             Ok(())
@@ -205,6 +239,7 @@ impl TelegramCore {
     /// Асинхронное подключение к дата-центру Telegram и старт цикла событий
     pub fn connect(&self, dc_id: i32, is_test: bool) -> Result<(), TgError> {
         safe_ffi!("TelegramCore::connect", {
+            info!(target: "TelegramCore", "Инициировано подключение к DC {} (test_mode={})", dc_id, is_test);
             let connection_arc = Arc::clone(&self.connection);
             let session_arc = Arc::clone(&self.session);
             let storage_arc = Arc::clone(&self.storage);
@@ -217,6 +252,7 @@ impl TelegramCore {
                     Ok(_) => {
                         let auth_key = generate_ephemeral_key();
                         let key_id = auth_key.key_id();
+                        info!(target: "TelegramCore", "Соединение установлено. Сгенерирован MTProto AuthKey: [KeyID=0x{:X}]", key_id);
                         let session = Session::new(auth_key);
 
                         {
@@ -238,6 +274,7 @@ impl TelegramCore {
                         Self::start_event_loop(connection_arc, storage_arc, listener_arc, dc_id).await;
                     }
                     Err(err) => {
+                        warn!(target: "TelegramCore", "Ошибка подключения к DC {}: {}", dc_id, err);
                         if let Some(listener) = listener_arc.read().as_ref() {
                             listener.on_error(TgError::Network { reason: err.to_string() });
                         }
@@ -257,6 +294,7 @@ impl TelegramCore {
         listener: Arc<RwLock<Option<Box<dyn TgClientListener>>>>,
         dc_id: i32,
     ) {
+        trace!(target: "TelegramCore", "Старт фонового Event Loop для DC {}", dc_id);
         loop {
             let read_res = {
                 let mut conn = connection.lock().await;
@@ -268,7 +306,7 @@ impl TelegramCore {
 
             match read_res {
                 Ok(raw_packet) => {
-                    // Обработка входящего пакета (Update / Новое сообщение)
+                    trace!(target: "TelegramCore", "Получен MTProto кадр размером {} байт", raw_packet.len());
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
@@ -288,7 +326,9 @@ impl TelegramCore {
 
                     // 1. Асинхронное сохранение в SQLite
                     if let Err(e) = storage.save_message(&msg_record) {
-                        tracing::error!(target: "tg_core", error = %e, "Ошибка сохранения сообщения в SQLite");
+                        error!(target: "TelegramCore", "Ошибка сохранения входящего сообщения в SQLite: {}", e);
+                    } else {
+                        trace!(target: "TelegramCore", "Сообщение id={} сохранено в SQLite", now);
                     }
 
                     // 2. Мгновенная доставка сообщения в Kotlin UI
@@ -303,7 +343,7 @@ impl TelegramCore {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!(target: "tg_core", error = %err, "Соединение разорвано");
+                    warn!(target: "TelegramCore", "TCP Соединение разорвано: {}", err);
                     if let Some(l) = listener.read().as_ref() {
                         l.on_connection_state_changed(false, dc_id, err.to_string());
                     }
@@ -316,6 +356,7 @@ impl TelegramCore {
     /// Экспортируемый метод: получение списка чатов для экрана диалогов в Jetpack Compose
     pub fn get_chats(&self) -> Result<Vec<ChatDto>, TgError> {
         safe_ffi!("TelegramCore::get_chats", {
+            trace!(target: "TelegramCore", "Запрос списка чатов из SQLite");
             let chats = self.storage.get_chats()?;
             Ok(chats.into_iter().map(ChatDto::from).collect())
         })
@@ -324,6 +365,7 @@ impl TelegramCore {
     /// Экспортируемый метод: получение истории сообщений чата с поддержкой пагинации
     pub fn get_messages(&self, chat_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageDto>, TgError> {
         safe_ffi!("TelegramCore::get_messages", {
+            trace!(target: "TelegramCore", "Запрос сообщений chat_id={}, limit={}, offset={}", chat_id, limit, offset);
             let messages = self.storage.get_messages(chat_id, limit as usize, offset as usize)?;
             Ok(messages.into_iter().map(MessageDto::from).collect())
         })
@@ -333,6 +375,7 @@ impl TelegramCore {
     /// сохраняет в SQLite, шифрует и отправляет через TCP в Telegram
     pub fn send_message(&self, chat_id: i64, text: String) -> Result<MessageDto, TgError> {
         safe_ffi!("TelegramCore::send_message", {
+            info!(target: "TelegramCore", "Отправка сообщения в чат {}: {} символов", chat_id, text.len());
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -350,6 +393,7 @@ impl TelegramCore {
 
             // 1. Сохраняем в локальную БД SQLite
             self.storage.save_message(&msg_record)?;
+            trace!(target: "TelegramCore", "Исходящее сообщение id={} сохранено в SQLite", now);
 
             // 2. Отправляем в сокет в фоновом воркере
             let conn_arc = Arc::clone(&self.connection);
@@ -380,6 +424,7 @@ impl TelegramCore {
     /// Разрыв соединения и очистка сессионных ключей из памяти
     pub fn disconnect(&self) -> Result<(), TgError> {
         safe_ffi!("TelegramCore::disconnect", {
+            info!(target: "TelegramCore", "Вызов disconnect: завершение соединения и Zeroize сессионных ключей");
             let conn_arc = Arc::clone(&self.connection);
             let session_arc = Arc::clone(&self.session);
 
@@ -390,6 +435,7 @@ impl TelegramCore {
                 let mut s_guard = session_arc.write();
                 if let Some(mut session) = s_guard.take() {
                     session.purge();
+                    info!(target: "TelegramCore", "Сессия MTProto очищена с помощью Zeroize");
                 }
             });
 
@@ -400,7 +446,7 @@ impl TelegramCore {
     /// Очистка некритичной памяти при уведомлении Android onTrimMemory
     pub fn trim_memory(&self, level: i32) -> Result<(), TgError> {
         safe_ffi!("TelegramCore::trim_memory", {
-            tracing::info!(target: "tg_core", level = level, "Вызов trim_memory: очистка L1 RAM кэшей и буферов");
+            warn!(target: "TelegramCore", "Вызов trim_memory(level={}): очистка L1 RAM кэшей медиа и буферов сокетов", level);
             Ok(())
         })
     }
@@ -408,6 +454,9 @@ impl TelegramCore {
     /// Легковесная обработка фонового FCM-пуша без полного старта UI
     pub fn handle_background_push(storage_dir: String, payload: String) -> Result<PushNotificationResult, TgError> {
         safe_ffi!("TelegramCore::handle_background_push", {
+            init_android_logger();
+            info!(target: "TelegramCore", "FCM Background Push: обработка полезной нагрузки ({} байт)", payload.len());
+
             let db_path = Path::new(&storage_dir).join("tg_database.db");
             let storage = Storage::open(db_path)?;
 
@@ -427,6 +476,7 @@ impl TelegramCore {
             };
 
             storage.save_message(&msg)?;
+            trace!(target: "TelegramCore", "Пуш-сообщение сохранено в БД, id={}", now);
 
             Ok(PushNotificationResult {
                 chat_id: 777,

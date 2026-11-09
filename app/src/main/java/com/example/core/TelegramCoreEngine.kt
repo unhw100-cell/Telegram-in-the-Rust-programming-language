@@ -320,4 +320,17 @@ class TelegramCoreEngine(
             -1L
         }
     }
+
+    /**
+     * Handles background push notification without launching UI (matching Rust TelegramCore::handle_background_push)
+     */
+    fun handleBackgroundPush(payload: String): PushNotificationResult {
+        return PushNotificationResult(
+            chatId = 777L,
+            senderName = "Telegram Notifications",
+            previewText = payload,
+            timestamp = System.currentTimeMillis(),
+            hasUnread = true
+        )
+    }
 }

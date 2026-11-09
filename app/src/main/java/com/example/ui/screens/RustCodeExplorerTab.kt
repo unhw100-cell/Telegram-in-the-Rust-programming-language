@@ -396,14 +396,99 @@ members = [
     "crates/tg-network",
     "crates/tg-storage",
     "crates/tg-ffi",
+    "crates/tg-core",
+    "crates/tg-media",
 ]
 
 [profile.release]
-opt-level = 3
-lto = "fat"
+opt-level = "s"         # Optimize for mobile binary size
+lto = "fat"             # Full link-time optimization
 codegen-units = 1
-panic = "unwind" # Required for catch_unwind on FFI!
-strip = "symbols"
+panic = "unwind"        # Required for catch_unwind on FFI!
+strip = "symbols"       # Strips symbols to shrink .so size
+""".trimIndent()
+    ),
+    RustSourceFile(
+        path = "crates/tg-core/tests/e2e_test.rs",
+        name = "e2e_test.rs",
+        crateName = "tg-core",
+        code = """
+// Сквозной интеграционный тест (E2E Integration Test)
+// Проверяет полный цикл работы ядра Telegram:
+// 1. Инициализация ядра TelegramCore::new и моста android_logger
+// 2. Регистрация TgClientListener через UniFFI
+// 3. Асинхронное подключение к тестовому MTProto DC 2
+// 4. Отправка сообщений с автоматической фиксацией в SQLite
+// 5. Выборка сообщений с пагинацией (limit / offset)
+// 6. Обработка фонового FCM-пуша (handle_background_push)
+// 7. Разрыв соединения и Zeroize сессионных ключей
+
+#[tokio::test]
+async fn test_full_lifecycle_e2e() {
+    init_rust_logger();
+    let temp_dir = tempdir().unwrap();
+    let storage_dir = temp_dir.path().to_str().unwrap().to_string();
+
+    let core = TelegramCore::new(storage_dir.clone()).unwrap();
+    let listener = Box::new(TestClientListener::default());
+    core.set_listener(listener).unwrap();
+
+    core.connect(2, true).unwrap();
+
+    let msg = core.send_message(42, "Привет, Telegram Rust Core!".to_string()).unwrap();
+    assert_eq!(msg.chat_id, 42);
+
+    let messages = core.get_messages(42, 10, 0).unwrap();
+    assert_eq!(messages.len(), 1);
+
+    let push = TelegramCore::handle_background_push(storage_dir, "Срочный звонок".into()).unwrap();
+    assert_eq!(push.chat_id, 777);
+
+    core.disconnect().unwrap();
+}
+""".trimIndent()
+    ),
+    RustSourceFile(
+        path = ".github/workflows/android_rust_ci.yml",
+        name = "android_rust_ci.yml",
+        crateName = "ci-cd",
+        code = """
+# GitHub Actions CI/CD Pipeline
+# Автоматическая сборка Rust Core + Android APK:
+# - Проверка форматирования, clippy и cargo check
+# - Запуск Unit & E2E тестов (cargo test)
+# - Компиляция arm64-v8a и x86_64 .so библиотек через cargo-ndk
+# - Сборка Release & Debug APK в Gradle
+# - Загрузка скомпилированных артефактов в GitHub Artifacts
+
+name: Telegram Rust Core & Android CI/CD
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  rust-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - run: cd rust-core && cargo check --workspace
+      - run: cd rust-core && cargo test --workspace
+
+  android-build:
+    needs: rust-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: 'temurin', java-version: '17' }
+      - run: cargo install cargo-ndk --locked
+      - run: cd rust-core && cargo ndk -t arm64-v8a -t x86_64 -o ../app/src/main/jniLibs build --release -p tg-core
+      - run: ./gradlew assembleRelease
 """.trimIndent()
     )
 )

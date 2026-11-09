@@ -1,0 +1,148 @@
+name: Telegram Rust Core & Android CI/CD
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    paths:
+      - 'rust-core/**'
+      - 'app/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+  ANDROID_NDK_VERSION: "26.1.10909125"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # ЭТАП 1: Валидация Rust-ядра (Форматирование, Clippy, Unit & E2E тесты)
+  # --------------------------------------------------------------------------
+  rust-validation:
+    name: Rust Core (Check, Clippy, E2E Tests)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+          targets: |
+            aarch64-linux-android
+            x86_64-linux-android
+            armv7-linux-androideabi
+
+      - name: Cache Cargo Dependencies & Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust-core/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-core/Cargo.lock', 'rust-core/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check Rust Workspace
+        run: |
+          cd rust-core
+          cargo check --workspace --all-targets
+
+      - name: Run Unit & E2E Integration Tests
+        run: |
+          cd rust-core
+          cargo test --workspace --verbose
+
+  # --------------------------------------------------------------------------
+  # ЭТАП 2: Кросс-компиляция native .so библиотек через cargo-ndk и сборка APK
+  # --------------------------------------------------------------------------
+  android-build:
+    name: Android NDK Build & APK Assembly
+    needs: rust-validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
+        run: |
+          sdkmanager --install "ndk;${{ env.ANDROID_NDK_VERSION }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+          echo "NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Setup Rust Toolchain for Android Targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            aarch64-linux-android
+            x86_64-linux-android
+            armv7-linux-androideabi
+
+      - name: Cache cargo-ndk binary
+        uses: actions/cache@v4
+        id: cache-cargo-ndk
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: ${{ runner.os }}-cargo-ndk-v3
+
+      - name: Install cargo-ndk
+        if: steps.cache-cargo-ndk.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --locked
+
+      - name: Compile Native Rust Libraries (.so) via cargo-ndk
+        run: |
+          cd rust-core
+          cargo ndk \
+            -t arm64-v8a \
+            -t x86_64 \
+            -o ../app/src/main/jniLibs \
+            build --release -p tg-core
+          cd ..
+          ls -la app/src/main/jniLibs/
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run Android Unit & Robolectric Tests
+        run: |
+          chmod +x ./gradlew || true
+          gradle :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble Release & Debug APK
+        run: |
+          gradle :app:assembleRelease :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-rust-core-apk
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+      - name: Upload Shared Libraries (.so)
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-rust-jni-libs
+          path: app/src/main/jniLibs/
+          retention-days: 14

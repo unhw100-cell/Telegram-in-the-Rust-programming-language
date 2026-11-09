@@ -7,20 +7,27 @@ license.workspace = true
 
 [lib]
 name = "tg_core"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 tg-crypto = { path = "../tg-crypto" }
 tg-network = { path = "../tg-network" }
 tg-storage = { path = "../tg-storage" }
+tg-media = { path = "../tg-media" }
 
 tokio = { version = "1.43", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
 uniffi = { version = "0.28", features = ["tokio"] }
 parking_lot = "0.12"
 thiserror = "2.0"
+log = "0.4"
+android_logger = "0.14"
 tracing = "0.1"
 tracing-android = "0.2"
 bytes = "1.10"
+
+[dev-dependencies]
+tempfile = "3.17"
+env_logger = "0.11"
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }

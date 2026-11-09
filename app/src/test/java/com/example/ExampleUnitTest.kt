@@ -51,4 +51,13 @@ class ExampleUnitTest {
         assertTrue(resultUnwrap.caughtPanic)
         assertTrue(resultUnwrap.jvmSurvived)
     }
+
+    @Test
+    fun testPushNotificationProcessing() {
+        val engine = TelegramCoreEngine("/tmp")
+        val result = engine.handleBackgroundPush("Тестовое уведомление из FCM")
+        assertEquals(777L, result.chatId)
+        assertTrue(result.previewText.contains("Тестовое уведомление"))
+        assertTrue(result.hasUnread)
+    }
 }

@@ -96,3 +96,12 @@ data class AuthKeySession(
     val isZeroized: Boolean,
     val createdAt: Long = System.currentTimeMillis()
 )
+
+data class PushNotificationResult(
+    val chatId: Long,
+    val senderName: String,
+    val previewText: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val hasUnread: Boolean = true
+)
+
